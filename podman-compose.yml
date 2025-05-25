@@ -1,0 +1,114 @@
+version: "3.8"
+
+services:
+  gitlab:
+    image: docker.io/gitlab/gitlab-ce:17.9.5-ce.0
+    container_name: efm-gitlab
+    hostname: gitlab.efm.localhost
+    ports:
+      - "8080:80"
+      - "4443:443"
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url '${GITLAB_EXTERNAL_URL}'
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        echo "[ENTRYPOINT] Starting GitLab in background...";
+        /assets/wrapper &
+
+        echo "[INIT] Waiting for GitLab to become ready...";
+        until curl -sf http://localhost/-/readiness; do
+          echo "[INIT] GitLab not ready yet. Retrying in 10s...";
+          sleep 10;
+        done
+
+        echo "[INIT] Setting GitLab root password...";
+        gitlab-rails runner "
+          user = User.find_by_username('root');
+          user.password = '${GITLAB_ROOT_PASSWORD}';
+          user.password_confirmation = '${GITLAB_ROOT_PASSWORD}';
+          user.save!
+        "
+
+        echo "[INIT] Ensuring runner-token directory exists...";
+        mkdir -p /runner-token
+
+        echo "[INIT] Fetching registration token...";
+        TOKEN=$$(gitlab-rails runner "puts Gitlab::CurrentSettings.current_application_settings.runners_registration_token" | tail -n1);
+        echo "$$TOKEN" > /runner-token/runner-registration-token.txt
+
+        echo "[INIT] Restarting GitLab...";
+        gitlab-ctl restart
+
+        echo "[INIT] Waiting for GitLab to continue running...";
+        wait
+    volumes:
+      - ./config:/etc/gitlab
+      - ./logs:/var/log/gitlab
+      - ./data:/var/opt/gitlab
+      - ./data/runner-token:/runner-token
+    shm_size: "2gb"
+    networks:
+      - efm-gitlab-network
+
+  gitlab-runner:
+    image: docker.io/gitlab/gitlab-runner:latest
+    container_name: efm-gitlab-runner
+    volumes:
+      - ./config:/etc/gitlab-runner
+      - ./data/runner-token:/runner-token:ro
+      - /run/user/1000/podman/podman.sock:/var/run/docker.sock
+    security_opt:
+      - label=disable
+    environment:
+      - GITLAB_URL=http://efm-gitlab:80
+      - GITLAB_ROOT_USER=root
+      - GITLAB_ROOT_PASSWORD='${GITLAB_ROOT_PASSWORD}'
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        apt-get update -qq && apt-get install -y -qq curl jq > /dev/null 2>&1;
+        echo "Waiting for GitLab UI to be ready...";
+
+        echo $${GITLAB_ROOT_PASSWORD};
+        echo $${GITLAB_URL}
+
+        echo "[RUNNER INIT] Waiting for GitLab readiness...";
+        until curl -sf http://efm-gitlab:80/users/sign_in; do
+          echo "[RUNNER INIT] GitLab not ready, retrying in 10s...";
+          sleep 10;
+        done;
+
+        echo "[RUNNER INIT] GitLab ready. Waiting extra 4 minutes...";
+        sleep 240;
+        echo "wait completed";
+
+        echo "[RUNNER INIT] Reading registration token...";
+        while [ ! -f /runner-token/runner-registration-token.txt ]; do
+          echo "[RUNNER INIT] Waiting for token file...";
+          sleep 5;
+        done;
+        REG_TOKEN=$$(cat /runner-token/runner-registration-token.txt)
+
+        echo "[RUNNER INIT] Registering GitLab Runner...";
+        gitlab-runner register \
+          --non-interactive \
+          --url "$${GITLAB_URL}" \
+          --registration-token "$${REG_TOKEN}" \
+          --executor "docker" \
+          --docker-image "docker:latest" \
+          --description "efm-runner" \
+          --tag-list "efm" \
+          --run-untagged="true" \
+          --locked="false"
+
+        echo "[RUNNER INIT] Registration complete. Waiting...";
+        sleep infinity;
+    networks:
+      - efm-gitlab-network
+
+networks:
+  efm-gitlab-network:
+    name: efm-gitlab-network
+
