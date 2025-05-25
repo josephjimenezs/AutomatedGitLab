@@ -101,10 +101,13 @@ services:
           --description "efm-runner" \
           --tag-list "efm" \
           --run-untagged="true" \
-          --locked="false"
+          --locked="false";
 
-        echo "[RUNNER INIT] Registration complete. Waiting...";
-        sleep infinity;
+        echo "[RUNNER INIT] Registration complete.";
+        
+        echo "[RUNNER INIT] Starting GitLab Runner in foreground...";
+        gitlab-runner run --user=gitlab-runner --working-directory=/home/gitlab-runner;
+
     networks:
       - efm-gitlab-network
 
