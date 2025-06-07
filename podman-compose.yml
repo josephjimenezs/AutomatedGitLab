@@ -10,7 +10,7 @@ services:
       - "4443:443"
     environment:
       GITLAB_OMNIBUS_CONFIG: |
-        external_url 'http://efm-gitlab'
+        external_url '${GITLAB_EXTERNAL_URL}'
         gitlab_rails['gitlab_shell_ssh_port'] = 22
         gitlab_rails['gitlab_host'] = 'efm-gitlab'
     entrypoint: ["/bin/bash", "-c"]
@@ -39,7 +39,7 @@ services:
         echo "[INIT] Setting internal clone URL...";
         gitlab-rails runner "
           app = ApplicationSetting.current;
-          app.http_clone_url = 'http://efm-gitlab:80';
+          app.http_clone_url = '${GITLAB_CLONE_URL}';
           app.save!
         "
 
@@ -73,7 +73,7 @@ services:
     security_opt:
       - label=disable
     environment:
-      - GITLAB_URL=http://efm-gitlab:80
+      - GITLAB_URL=${GITLAB_CLONE_URL}
       - GITLAB_ROOT_USER=root
       - GITLAB_ROOT_PASSWORD=${GITLAB_ROOT_PASSWORD}
     entrypoint: ["/bin/bash", "-c"]
