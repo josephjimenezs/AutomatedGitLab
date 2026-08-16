@@ -1,10 +1,10 @@
-version: "3.8"
-
 services:
   gitlab:
-    image: docker.io/gitlab/gitlab-ce:17.9.5-ce.0
+    image: docker.io/gitlab/gitlab-ce:19.2.2-ce.0
     container_name: efm-gitlab
     hostname: efm-gitlab
+    restart: unless-stopped
+    stop_grace_period: 5m
     ports:
       - "8080:80"
       - "4443:443"
@@ -16,8 +16,10 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - >
+        set -uo pipefail;
+
         echo "[ENTRYPOINT] Starting GitLab in background...";
-        /assets/wrapper &
+        /assets/init-container &
 
         echo "[INIT] Waiting for GitLab to become ready...";
         until curl -sf http://localhost/-/readiness; do
@@ -52,11 +54,17 @@ services:
 
         echo "[INIT] Waiting for GitLab to continue running...";
         wait
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/-/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 5m
     volumes:
-      - ./config:/etc/gitlab
-      - ./logs:/var/log/gitlab
-      - ./data:/var/opt/gitlab
-      - ./data/runner-token:/runner-token
+      - gitlab-config:/etc/gitlab
+      - gitlab-logs:/var/log/gitlab
+      - gitlab-data:/var/opt/gitlab
+      - runner-token:/runner-token
     shm_size: "2gb"
     networks:
       efm-gitlab-network:
@@ -64,12 +72,16 @@ services:
           - efm-gitlab
 
   gitlab-runner:
-    image: docker.io/gitlab/gitlab-runner:latest
+    image: docker.io/gitlab/gitlab-runner:v19.2.1
     container_name: efm-gitlab-runner
+    restart: unless-stopped
+    depends_on:
+      gitlab:
+        condition: service_healthy
     volumes:
-      - ./config:/etc/gitlab-runner
-      - ./data/runner-token:/runner-token:ro
-      - /run/user/1000/podman/podman.sock:/var/run/docker.sock
+      - runner-config:/etc/gitlab-runner
+      - runner-token:/runner-token:ro
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/podman/podman.sock:/var/run/docker.sock
     security_opt:
       - label=disable
     environment:
@@ -79,46 +91,48 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - >
-        apt-get update -qq && apt-get install -y -qq curl jq > /dev/null 2>&1;
+        set -uo pipefail;
 
-        echo "[RUNNER INIT] Waiting for GitLab UI to be ready...";
-        until curl -sf http://efm-gitlab:80/users/sign_in; do
-          echo "[RUNNER INIT] GitLab not ready, retrying in 10s...";
-          sleep 10;
-        done;
-
-        echo "[RUNNER INIT] GitLab ready. Waiting extra 4 minutes...";
-        sleep 420;
-
-        while [ ! -s /runner-token/runner-registration-token.txt ]; do
-          echo "[RUNNER INIT] Waiting for non-empty token file...";
-          sleep 5;
-        done;
-        REG_TOKEN=$$(cat /runner-token/runner-registration-token.txt)
-
-        echo "[RUNNER INIT] Registering GitLab Runner...";
-        gitlab-runner register \
-          --non-interactive \
-          --url "$${GITLAB_URL}" \
-          --registration-token "$${REG_TOKEN}" \
-          --executor "docker" \
-          --docker-image "docker:latest" \
-          --description "efm-runner" \
-          --docker-network-mode "efm-gitlab-network" \
-          --tag-list "efm" \
-          --run-untagged="true" \
-          --locked="false"
-
-
-        if [ -f /etc/gitlab-runner/config.toml ]; then
-          echo "[RUNNER INIT] Patching config.toml for clone_url...";
-          sed -i '/^\s*url = /a \    clone_url = "http://efm-gitlab:80"' /etc/gitlab-runner/config.toml
+        if [ -f /etc/gitlab-runner/config.toml ] && grep -q '\[\[runners\]\]' /etc/gitlab-runner/config.toml; then
+          echo "[RUNNER INIT] Runner already registered, skipping registration.";
         else
-          echo "[WARN] config.toml not found, skipping clone_url patch."
+          echo "[RUNNER INIT] Waiting for registration token...";
+          until [ -s /runner-token/runner-registration-token.txt ]; do
+            echo "[RUNNER INIT] Token not yet available, retrying in 5s...";
+            sleep 5;
+          done;
+          REG_TOKEN=$$(cat /runner-token/runner-registration-token.txt);
+
+          echo "[RUNNER INIT] Registering GitLab Runner...";
+          i=0;
+          until gitlab-runner register \
+            --non-interactive \
+            --url "$${GITLAB_URL}" \
+            --registration-token "$${REG_TOKEN}" \
+            --executor "docker" \
+            --docker-image "docker:latest" \
+            --description "efm-runner" \
+            --docker-network-mode "efm-gitlab-network" \
+            --tag-list "efm" \
+            --run-untagged="true" \
+            --locked="false"; do
+            i=$$((i + 1));
+            if [ "$$i" -ge 10 ]; then
+              echo "[RUNNER INIT] Registration failed after 10 attempts, giving up.";
+              exit 1;
+            fi
+            echo "[RUNNER INIT] Registration attempt $$i failed, retrying in 10s...";
+            sleep 10;
+          done;
+
+          if ! grep -q 'clone_url' /etc/gitlab-runner/config.toml; then
+            echo "[RUNNER INIT] Patching config.toml for clone_url...";
+            sed -i '/^\s*url = /a \    clone_url = "http://efm-gitlab:80"' /etc/gitlab-runner/config.toml
+          fi
         fi
 
         echo "[RUNNER INIT] Starting GitLab Runner in foreground...";
-        gitlab-runner run --user=gitlab-runner --working-directory=/home/gitlab-runner;
+        exec gitlab-runner run --user=gitlab-runner --working-directory=/home/gitlab-runner
     networks:
       - efm-gitlab-network
 
@@ -126,3 +140,9 @@ networks:
   efm-gitlab-network:
     name: efm-gitlab-network
 
+volumes:
+  gitlab-config:
+  gitlab-logs:
+  gitlab-data:
+  runner-config:
+  runner-token:
