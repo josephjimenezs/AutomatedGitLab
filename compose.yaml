@@ -1,8 +1,8 @@
 services:
   gitlab:
     image: docker.io/gitlab/gitlab-ce:19.2.2-ce.0
-    container_name: efm-gitlab
-    hostname: efm-gitlab
+    container_name: xotrik-gitlab
+    hostname: xotrik-gitlab
     restart: unless-stopped
     stop_grace_period: 5m
     ports:
@@ -12,50 +12,41 @@ services:
       GITLAB_OMNIBUS_CONFIG: |
         external_url '${GITLAB_EXTERNAL_URL}'
         gitlab_rails['gitlab_shell_ssh_port'] = 22
-        gitlab_rails['gitlab_host'] = 'efm-gitlab'
-    entrypoint: ["/bin/bash", "-c"]
+        gitlab_rails['gitlab_host'] = 'xotrik-gitlab'
+    entrypoint: [ "/bin/bash", "-c" ]
     command:
       - >
         set -uo pipefail;
 
-        echo "[ENTRYPOINT] Starting GitLab in background...";
-        /assets/init-container &
+        echo "[ENTRYPOINT] Starting GitLab in background..."; /assets/init-container &
 
-        echo "[INIT] Waiting for GitLab to become ready...";
-        until curl -sf http://localhost/-/readiness; do
+        echo "[INIT] Waiting for GitLab to become ready..."; until curl -sf http://localhost/-/readiness; do
           echo "[INIT] GitLab not ready yet. Retrying in 10s...";
           sleep 10;
         done
 
-        echo "[INIT] Setting GitLab root password...";
-        gitlab-rails runner "
+        echo "[INIT] Setting GitLab root password..."; gitlab-rails runner "
           user = User.find_by_username('root');
           user.password = '${GITLAB_ROOT_PASSWORD}';
           user.password_confirmation = '${GITLAB_ROOT_PASSWORD}';
           user.save!
         "
 
-        echo "[INIT] Ensuring runner-token directory exists...";
-        mkdir -p /runner-token
+        echo "[INIT] Ensuring runner-token directory exists..."; mkdir -p /runner-token
 
-        echo "[INIT] Setting internal clone URL...";
-        gitlab-rails runner "
+        echo "[INIT] Setting internal clone URL..."; gitlab-rails runner "
           app = ApplicationSetting.current;
           app.http_clone_url = '${GITLAB_CLONE_URL}';
           app.save!
         "
 
-        echo "[INIT] Fetching registration token...";
-        TOKEN=$$(gitlab-rails runner "puts Gitlab::CurrentSettings.current_application_settings.runners_registration_token" | tail -n1);
-        echo "$$TOKEN" > /runner-token/runner-registration-token.txt
+        echo "[INIT] Fetching registration token..."; TOKEN=$$(gitlab-rails runner "puts Gitlab::CurrentSettings.current_application_settings.runners_registration_token" | tail -n1); echo "$$TOKEN" > /runner-token/runner-registration-token.txt
 
-        echo "[INIT] Restarting GitLab...";
-        gitlab-ctl restart
+        echo "[INIT] Restarting GitLab..."; gitlab-ctl restart
 
-        echo "[INIT] Waiting for GitLab to continue running...";
-        wait
+        echo "[INIT] Waiting for GitLab to continue running..."; wait
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/-/readiness"]
+      test: [ "CMD", "curl", "-f", "http://localhost/-/readiness" ]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -67,13 +58,13 @@ services:
       - runner-token:/runner-token
     shm_size: "2gb"
     networks:
-      efm-gitlab-network:
+      xotrik-gitlab-network:
         aliases:
-          - efm-gitlab
+          - xotrik-gitlab
 
   gitlab-runner:
     image: docker.io/gitlab/gitlab-runner:v19.2.1
-    container_name: efm-gitlab-runner
+    container_name: xotrik-gitlab-runner
     restart: unless-stopped
     depends_on:
       gitlab:
@@ -88,7 +79,7 @@ services:
       - GITLAB_URL=${GITLAB_CLONE_URL}
       - GITLAB_ROOT_USER=root
       - GITLAB_ROOT_PASSWORD=${GITLAB_ROOT_PASSWORD}
-    entrypoint: ["/bin/bash", "-c"]
+    entrypoint: [ "/bin/bash", "-c" ]
     command:
       - >
         set -uo pipefail;
@@ -111,9 +102,9 @@ services:
             --registration-token "$${REG_TOKEN}" \
             --executor "docker" \
             --docker-image "docker:latest" \
-            --description "efm-runner" \
-            --docker-network-mode "efm-gitlab-network" \
-            --tag-list "efm" \
+            --description "xotrik-runner" \
+            --docker-network-mode "xotrik-gitlab-network" \
+            --tag-list "xotrik" \
             --run-untagged="true" \
             --locked="false"; do
             i=$$((i + 1));
@@ -127,18 +118,17 @@ services:
 
           if ! grep -q 'clone_url' /etc/gitlab-runner/config.toml; then
             echo "[RUNNER INIT] Patching config.toml for clone_url...";
-            sed -i '/^\s*url = /a \    clone_url = "http://efm-gitlab:80"' /etc/gitlab-runner/config.toml
+            sed -i '/^\s*url = /a \    clone_url = "http://xotrik-gitlab:80"' /etc/gitlab-runner/config.toml
           fi
         fi
 
-        echo "[RUNNER INIT] Starting GitLab Runner in foreground...";
-        exec gitlab-runner run --user=gitlab-runner --working-directory=/home/gitlab-runner
+        echo "[RUNNER INIT] Starting GitLab Runner in foreground..."; exec gitlab-runner run --user=gitlab-runner --working-directory=/home/gitlab-runner
     networks:
-      - efm-gitlab-network
+      - xotrik-gitlab-network
 
 networks:
-  efm-gitlab-network:
-    name: efm-gitlab-network
+  xotrik-gitlab-network:
+    name: xotrik-gitlab-network
 
 volumes:
   gitlab-config:

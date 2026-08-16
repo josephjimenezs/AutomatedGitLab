@@ -11,7 +11,7 @@ if ($Down) {
 }
 
 if (-not $RootPassword) {
-    $RootPassword = Read-Host "Password para el usuario root de GitLab (efm-gitlab)"
+    $RootPassword = Read-Host "Password para el usuario root de GitLab (xotrik-gitlab)"
     if (-not $RootPassword) {
         Write-Error "No se definio un password. Abortando."
         exit 1
